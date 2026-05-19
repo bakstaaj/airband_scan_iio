@@ -580,7 +580,7 @@ static void showHelp(void) {
         "  --start <Hz>          Start frequency, default 118000000\n"
         "  --end <Hz>            End frequency, default 136975000\n"
         "  --step <Hz>           Channel step, default 25000\n"
-        "  --rate <Hz>           Sample rate, default 2000000\n"
+        "  --rate <Hz>           Sample rate, default 2400000\n"
         "  --bandwidth <Hz>      RF bandwidth, default = sample rate\n"
         "  --threshold <dB>      Detection threshold over noise, default 16\n"
         "  --detect-bw <Hz>      Detection bandwidth around channel, default 12000\n"
