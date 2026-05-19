@@ -1,0 +1,6 @@
+# Example watch-list format: frequency [label]
+# Use Hz, MHz, or MHz with suffix.
+118.700  Example Tower
+120.700  Example Approach
+121.500  Emergency / Guard
+124.100  Example Departure
