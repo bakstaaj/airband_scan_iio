@@ -13,7 +13,7 @@
  * looking for AM carrier / narrowband energy in the 118.000-136.975 MHz band.
  *
  * Build on the Pluto+/Pluto Linux shell:
- *   gcc -O2 -Wall -o airband_scan pluto_airband_scan.c -liio -lad9361 -lm
+ *   gcc -O2 -Wall -o airband_scan pluto_airband_scan.c -liio -lm
  *
  * Example:
  *   ./airband_scan --threshold 16 --gain -100
@@ -34,7 +34,6 @@
 #include <unistd.h>
 
 #include <iio.h>
-#include <ad9361.h>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -271,9 +270,14 @@ static void modesInitPLUTOSDR(void) {
     attr_write_ll(Modes.rx0_phy, "rf_bandwidth", Modes.rf_bandwidth);
     attr_write_ll(Modes.rx0_phy, "sampling_frequency", Modes.sample_rate);
 
-    if (ad9361_set_bb_rate(Modes.phy, (unsigned long)Modes.sample_rate) < 0) {
-        fprintf(stderr, "Warning: ad9361_set_bb_rate() failed; continuing with direct IIO attrs.\n");
-    }
+    /*
+     * Do not call ad9361_set_bb_rate() here.
+     *
+     * The original dump1090 Pluto fork can use libad9361-iio, but many Pluto+
+     * images only ship libiio.  Writing the normal IIO attributes directly is
+     * enough for this scanner and avoids an undefined-reference link failure
+     * when libad9361-iio is missing or not linked.
+     */
 
     if (Modes.gain == MODES_AUTO_GAIN || Modes.enable_agc) {
         attr_write_str(Modes.rx0_phy, "gain_control_mode", "slow_attack");
