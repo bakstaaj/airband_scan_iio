@@ -22,6 +22,15 @@
 
    Example for 8.33 kHz-ish spacing:
      ./airband_scan_iio -k 8.333 -t 14
+
+   Notes:
+     This version avoids newer libiio helper symbols such as:
+       iio_channel_attr_write_string()
+       iio_channel_attr_write_longlong()
+
+     It uses the older/common:
+       iio_channel_attr_write()
+     for string, integer, and floating-point attributes.
 */
 
 #include <stdio.h>
@@ -94,6 +103,7 @@ static void handle_sigint(int sig)
 static void iio_perror_msg(const char *msg, int ret)
 {
     char errbuf[256];
+
     if (ret < 0) {
         iio_strerror(-ret, errbuf, sizeof(errbuf));
         fprintf(stderr, "%s: %s\n", msg, errbuf);
@@ -116,12 +126,16 @@ static int cmp_double(const void *a, const void *b)
 
 static void fft_forward(complex_d *x, int n)
 {
-    int i, j;
+    int i;
+    int j;
 
     for (i = 1, j = 0; i < n; i++) {
         int bit = n >> 1;
-        for (; j & bit; bit >>= 1)
+
+        for (; j & bit; bit >>= 1) {
             j ^= bit;
+        }
+
         j ^= bit;
 
         if (i < j) {
@@ -144,8 +158,10 @@ static void fft_forward(complex_d *x, int n)
                 complex_d u = x[i + j];
                 complex_d v;
 
-                v.r = x[i + j + len / 2].r * w_r - x[i + j + len / 2].i * w_i;
-                v.i = x[i + j + len / 2].r * w_i + x[i + j + len / 2].i * w_r;
+                v.r = x[i + j + len / 2].r * w_r -
+                      x[i + j + len / 2].i * w_i;
+                v.i = x[i + j + len / 2].r * w_i +
+                      x[i + j + len / 2].i * w_r;
 
                 x[i + j].r = u.r + v.r;
                 x[i + j].i = u.i + v.i;
@@ -154,6 +170,7 @@ static void fft_forward(complex_d *x, int n)
 
                 double next_r = w_r * wlen_r - w_i * wlen_i;
                 double next_i = w_r * wlen_i + w_i * wlen_r;
+
                 w_r = next_r;
                 w_i = next_i;
             }
@@ -196,43 +213,49 @@ static void print_usage(const char *prog)
         "  %s\n"
         "  %s -t 12 -g 50\n"
         "  %s -k 8.333 -t 14\n",
-        prog, prog, prog, prog
+        prog,
+        prog,
+        prog,
+        prog
     );
+}
+
+/*
+   Older libiio compatible attribute writers.
+
+   These intentionally use iio_channel_attr_write() for all attribute types.
+   That avoids undefined references on embedded images that do not export
+   iio_channel_attr_write_string() or iio_channel_attr_write_longlong().
+*/
+
+static int set_attr_str(struct iio_channel *ch, const char *attr, const char *value)
+{
+    ssize_t ret = iio_channel_attr_write(ch, attr, value);
+
+    if (ret < 0) {
+        char msg[160];
+        snprintf(msg, sizeof(msg), "Failed writing %s=%s", attr, value);
+        iio_perror_msg(msg, (int)ret);
+        return (int)ret;
+    }
+
+    return 0;
 }
 
 static int set_attr_ll(struct iio_channel *ch, const char *attr, long long value)
 {
-    int ret = iio_channel_attr_write_longlong(ch, attr, value);
-    if (ret < 0) {
-        char msg[160];
-        snprintf(msg, sizeof(msg), "Failed writing %s=%lld", attr, value);
-        iio_perror_msg(msg, ret);
-    }
-    return ret;
-}
+    char buf[64];
 
-static int set_attr_str(struct iio_channel *ch, const char *attr, const char *value)
-{
-    int ret = iio_channel_attr_write_string(ch, attr, value);
-    if (ret < 0) {
-        char msg[160];
-        snprintf(msg, sizeof(msg), "Failed writing %s=%s", attr, value);
-        iio_perror_msg(msg, ret);
-    }
-    return ret;
+    snprintf(buf, sizeof(buf), "%lld", value);
+    return set_attr_str(ch, attr, buf);
 }
 
 static int set_attr_double_as_str(struct iio_channel *ch, const char *attr, double value)
 {
     char buf[64];
+
     snprintf(buf, sizeof(buf), "%.2f", value);
-    int ret = iio_channel_attr_write(ch, attr, buf);
-    if (ret < 0) {
-        char msg[160];
-        snprintf(msg, sizeof(msg), "Failed writing %s=%s", attr, buf);
-        iio_perror_msg(msg, ret);
-    }
-    return ret;
+    return set_attr_str(ch, attr, buf);
 }
 
 static int configure_rx(
@@ -241,6 +264,8 @@ static int configure_rx(
     struct iio_channel **rx_lo_ch,
     const config_t *cfg
 ) {
+    int ret;
+
     *rx_phy_ch = iio_device_find_channel(phy, "voltage0", false);
     if (!*rx_phy_ch) {
         fprintf(stderr, "Could not find RX phy channel ad9361-phy/voltage0\n");
@@ -253,25 +278,35 @@ static int configure_rx(
         return -1;
     }
 
-    int ret;
-
-    ret = iio_channel_attr_write_string(*rx_phy_ch, "rf_port_select", cfg->rf_port);
+    ret = set_attr_str(*rx_phy_ch, "rf_port_select", cfg->rf_port);
     if (ret < 0 && cfg->verbose) {
-        fprintf(stderr, "Warning: could not set rf_port_select=%s; continuing\n", cfg->rf_port);
+        fprintf(
+            stderr,
+            "Warning: could not set rf_port_select=%s; continuing\n",
+            cfg->rf_port
+        );
     }
 
     ret = set_attr_ll(*rx_phy_ch, "rf_bandwidth", cfg->rf_bw_hz);
-    if (ret < 0) return ret;
+    if (ret < 0) {
+        return ret;
+    }
 
     ret = set_attr_ll(*rx_phy_ch, "sampling_frequency", cfg->sample_rate_hz);
-    if (ret < 0) return ret;
+    if (ret < 0) {
+        return ret;
+    }
 
     ret = set_attr_str(*rx_phy_ch, "gain_control_mode", cfg->agc_mode);
-    if (ret < 0) return ret;
+    if (ret < 0) {
+        return ret;
+    }
 
     if (strcmp(cfg->agc_mode, "manual") == 0) {
         ret = set_attr_double_as_str(*rx_phy_ch, "hardwaregain", cfg->gain_db);
-        if (ret < 0) return ret;
+        if (ret < 0) {
+            return ret;
+        }
     }
 
     return 0;
@@ -291,28 +326,37 @@ static int offset_hz_to_bin(double offset_hz, double sample_rate_hz, int n)
 {
     long signed_bin = lround((offset_hz / sample_rate_hz) * (double)n);
 
-    while (signed_bin < -n / 2)
+    while (signed_bin < -n / 2) {
         signed_bin += n;
-    while (signed_bin > n / 2)
-        signed_bin -= n;
+    }
 
-    if (signed_bin < 0)
+    while (signed_bin > n / 2) {
+        signed_bin -= n;
+    }
+
+    if (signed_bin < 0) {
         return n + signed_bin;
+    }
+
     return signed_bin;
 }
 
 static double median_noise_floor_db(const double *spectrum_db, int n, int dc_skip_bins)
 {
     double *tmp = malloc(sizeof(double) * (size_t)n);
-    if (!tmp)
+
+    if (!tmp) {
         return -300.0;
+    }
 
     int count = 0;
 
     for (int k = 0; k < n; k++) {
         int sb = signed_bin_index(k, n);
-        if (abs(sb) <= dc_skip_bins)
+
+        if (abs(sb) <= dc_skip_bins) {
             continue;
+        }
 
         tmp[count++] = spectrum_db[k];
     }
@@ -323,7 +367,9 @@ static double median_noise_floor_db(const double *spectrum_db, int n, int dc_ski
     }
 
     qsort(tmp, (size_t)count, sizeof(double), cmp_double);
+
     double median = tmp[count / 2];
+
     free(tmp);
     return median;
 }
@@ -338,23 +384,34 @@ static double channel_peak_db(
 ) {
     double bin_hz = sample_rate_hz / (double)n;
     int half_bins = (int)ceil((channel_bw_hz * 0.5) / bin_hz);
-    if (half_bins < 1)
+
+    if (half_bins < 1) {
         half_bins = 1;
+    }
 
     int center_bin = offset_hz_to_bin(offset_hz, sample_rate_hz, n);
     double peak = -300.0;
 
     for (int dk = -half_bins; dk <= half_bins; dk++) {
         int b = center_bin + dk;
-        while (b < 0) b += n;
-        while (b >= n) b -= n;
+
+        while (b < 0) {
+            b += n;
+        }
+
+        while (b >= n) {
+            b -= n;
+        }
 
         int sb = signed_bin_index(b, n);
-        if (abs(sb) <= dc_skip_bins)
-            continue;
 
-        if (spectrum_db[b] > peak)
+        if (abs(sb) <= dc_skip_bins) {
+            continue;
+        }
+
+        if (spectrum_db[b] > peak) {
             peak = spectrum_db[b];
+        }
     }
 
     return peak;
@@ -369,6 +426,7 @@ static int capture_fft_spectrum(
     int n
 ) {
     ssize_t nbytes = iio_buffer_refill(rxbuf);
+
     if (nbytes < 0) {
         iio_perror_msg("iio_buffer_refill failed", (int)nbytes);
         return -1;
@@ -402,7 +460,12 @@ static int capture_fft_spectrum(
     }
 
     if (count < n) {
-        fprintf(stderr, "Short IIO buffer: got %d complex samples, expected %d\n", count, n);
+        fprintf(
+            stderr,
+            "Short IIO buffer: got %d complex samples, expected %d\n",
+            count,
+            n
+        );
         return -1;
     }
 
@@ -411,6 +474,7 @@ static int capture_fft_spectrum(
 
     for (int i = 0; i < n; i++) {
         double w = 0.5 - 0.5 * cos((2.0 * M_PI * (double)i) / (double)(n - 1));
+
         fft_buf[i].r = (fft_buf[i].r - mean_i) * w;
         fft_buf[i].i = (fft_buf[i].i - mean_q) * w;
     }
@@ -418,7 +482,9 @@ static int capture_fft_spectrum(
     fft_forward(fft_buf, n);
 
     for (int k = 0; k < n; k++) {
-        double p = fft_buf[k].r * fft_buf[k].r + fft_buf[k].i * fft_buf[k].i;
+        double p = fft_buf[k].r * fft_buf[k].r +
+                   fft_buf[k].i * fft_buf[k].i;
+
         spectrum_db[k] = 10.0 * log10(p + 1e-30);
     }
 
@@ -433,6 +499,7 @@ static void print_active(
 ) {
     time_t now = time(NULL);
     struct tm tm_now;
+
     localtime_r(&now, &tm_now);
 
     char tbuf[64];
@@ -453,6 +520,7 @@ static void print_active(
 int main(int argc, char **argv)
 {
     config_t cfg;
+
     cfg.start_hz = DEFAULT_START_HZ;
     cfg.end_hz = DEFAULT_END_HZ;
     cfg.step_hz = DEFAULT_STEP_HZ;
@@ -468,41 +536,53 @@ int main(int argc, char **argv)
     cfg.rf_port = "A_BALANCED";
 
     int opt;
+
     while ((opt = getopt(argc, argv, "s:e:k:r:b:t:g:a:n:ovh")) != -1) {
         switch (opt) {
             case 's':
                 cfg.start_hz = mhz_to_hz(optarg);
                 break;
+
             case 'e':
                 cfg.end_hz = mhz_to_hz(optarg);
                 break;
+
             case 'k':
                 cfg.step_hz = khz_to_hz(optarg);
                 break;
+
             case 'r':
                 cfg.sample_rate_hz = mhz_to_hz(optarg);
                 break;
+
             case 'b':
                 cfg.rf_bw_hz = mhz_to_hz(optarg);
                 break;
+
             case 't':
                 cfg.threshold_db = strtod(optarg, NULL);
                 break;
+
             case 'g':
                 cfg.gain_db = strtod(optarg, NULL);
                 break;
+
             case 'a':
                 cfg.agc_mode = optarg;
                 break;
+
             case 'n':
                 cfg.fft_size = atoi(optarg);
                 break;
+
             case 'o':
                 cfg.one_sweep = true;
                 break;
+
             case 'v':
                 cfg.verbose = true;
                 break;
+
             case 'h':
             default:
                 print_usage(argv[0]);
@@ -534,24 +614,30 @@ int main(int argc, char **argv)
     signal(SIGTERM, handle_sigint);
 
     printf("Airband IIO scanner starting\n");
-    printf("Range: %.6f to %.6f MHz, step %.3f kHz\n",
-           (double)cfg.start_hz / 1000000.0,
-           (double)cfg.end_hz / 1000000.0,
-           (double)cfg.step_hz / 1000.0);
-    printf("Sample rate: %.3f MSPS, RF BW: %.3f MHz, FFT: %d, threshold: %.1f dB\n",
-           (double)cfg.sample_rate_hz / 1000000.0,
-           (double)cfg.rf_bw_hz / 1000000.0,
-           cfg.fft_size,
-           cfg.threshold_db);
+    printf(
+        "Range: %.6f to %.6f MHz, step %.3f kHz\n",
+        (double)cfg.start_hz / 1000000.0,
+        (double)cfg.end_hz / 1000000.0,
+        (double)cfg.step_hz / 1000.0
+    );
+    printf(
+        "Sample rate: %.3f MSPS, RF BW: %.3f MHz, FFT: %d, threshold: %.1f dB\n",
+        (double)cfg.sample_rate_hz / 1000000.0,
+        (double)cfg.rf_bw_hz / 1000000.0,
+        cfg.fft_size,
+        cfg.threshold_db
+    );
     printf("Press Ctrl-C to stop.\n\n");
 
     struct iio_context *ctx = iio_create_local_context();
+
     if (!ctx) {
         fprintf(stderr, "Could not create local IIO context\n");
         return 1;
     }
 
     struct iio_device *phy = iio_context_find_device(ctx, "ad9361-phy");
+
     if (!phy) {
         fprintf(stderr, "Could not find IIO device ad9361-phy\n");
         iio_context_destroy(ctx);
@@ -559,6 +645,7 @@ int main(int argc, char **argv)
     }
 
     struct iio_device *rxdev = iio_context_find_device(ctx, "cf-ad9361-lpc");
+
     if (!rxdev) {
         fprintf(stderr, "Could not find IIO RX stream device cf-ad9361-lpc\n");
         iio_context_destroy(ctx);
@@ -585,7 +672,9 @@ int main(int argc, char **argv)
     iio_channel_enable(rx_i);
     iio_channel_enable(rx_q);
 
-    struct iio_buffer *rxbuf = iio_device_create_buffer(rxdev, (size_t)cfg.fft_size, false);
+    struct iio_buffer *rxbuf =
+        iio_device_create_buffer(rxdev, (size_t)cfg.fft_size, false);
+
     if (!rxbuf) {
         fprintf(stderr, "Could not create RX buffer\n");
         iio_context_destroy(ctx);
@@ -597,21 +686,28 @@ int main(int argc, char **argv)
 
     if (!fft_buf || !spectrum_db) {
         fprintf(stderr, "Out of memory\n");
+
         free(fft_buf);
         free(spectrum_db);
         iio_buffer_destroy(rxbuf);
         iio_context_destroy(ctx);
+
         return 1;
     }
 
-    int channel_count = (int)(((cfg.end_hz - cfg.start_hz) / cfg.step_hz) + 1);
+    int channel_count =
+        (int)(((cfg.end_hz - cfg.start_hz) / cfg.step_hz) + 1);
+
     time_t *last_report = calloc((size_t)channel_count, sizeof(time_t));
+
     if (!last_report) {
         fprintf(stderr, "Out of memory\n");
+
         free(fft_buf);
         free(spectrum_db);
         iio_buffer_destroy(rxbuf);
         iio_context_destroy(ctx);
+
         return 1;
     }
 
@@ -619,20 +715,29 @@ int main(int argc, char **argv)
     double analysis_half_hz = sample_rate * 0.45;
     double chunk_step_hz = sample_rate * 0.75;
     double channel_bw_hz = fmin((double)cfg.step_hz * 0.80, 20000.0);
-    if (channel_bw_hz < 5000.0)
-        channel_bw_hz = (double)cfg.step_hz * 0.70;
 
-    int dc_skip_bins = (int)ceil(3000.0 / (sample_rate / (double)cfg.fft_size));
-    if (dc_skip_bins < 2)
+    if (channel_bw_hz < 5000.0) {
+        channel_bw_hz = (double)cfg.step_hz * 0.70;
+    }
+
+    int dc_skip_bins =
+        (int)ceil(3000.0 / (sample_rate / (double)cfg.fft_size));
+
+    if (dc_skip_bins < 2) {
         dc_skip_bins = 2;
+    }
 
     while (!stop_requested) {
-        double first_center = (double)cfg.start_hz + analysis_half_hz - ((double)cfg.step_hz * 0.5);
+        double first_center =
+            (double)cfg.start_hz +
+            analysis_half_hz -
+            ((double)cfg.step_hz * 0.5);
 
-        for (double center_d = first_center;
-             center_d - analysis_half_hz <= (double)cfg.end_hz && !stop_requested;
-             center_d += chunk_step_hz) {
-
+        for (
+            double center_d = first_center;
+            center_d - analysis_half_hz <= (double)cfg.end_hz && !stop_requested;
+            center_d += chunk_step_hz
+        ) {
             long long center_hz = (long long)llround(center_d);
 
             if (cfg.verbose) {
@@ -640,9 +745,14 @@ int main(int argc, char **argv)
             }
 
             if (tune_rx(rx_lo_ch, center_hz) < 0) {
-                fprintf(stderr,
-                        "Tuning failed at %.6f MHz. If this is near 118 MHz, your Pluto firmware/hardware may not support VHF airband.\n",
-                        (double)center_hz / 1000000.0);
+                fprintf(
+                    stderr,
+                    "Tuning failed at %.6f MHz. "
+                    "If this is near 118 MHz, your Pluto firmware/hardware "
+                    "may not support VHF airband.\n",
+                    (double)center_hz / 1000000.0
+                );
+
                 stop_requested = 1;
                 break;
             }
@@ -653,29 +763,45 @@ int main(int argc, char **argv)
                Discard one buffer after tuning so we do not analyze stale samples.
             */
             ssize_t discard = iio_buffer_refill(rxbuf);
+
             if (discard < 0) {
                 iio_perror_msg("Discard refill failed", (int)discard);
                 stop_requested = 1;
                 break;
             }
 
-            if (capture_fft_spectrum(rxbuf, rx_i, rx_q, fft_buf, spectrum_db, cfg.fft_size) < 0) {
+            if (
+                capture_fft_spectrum(
+                    rxbuf,
+                    rx_i,
+                    rx_q,
+                    fft_buf,
+                    spectrum_db,
+                    cfg.fft_size
+                ) < 0
+            ) {
                 stop_requested = 1;
                 break;
             }
 
-            double floor_db = median_noise_floor_db(spectrum_db, cfg.fft_size, dc_skip_bins);
+            double floor_db =
+                median_noise_floor_db(spectrum_db, cfg.fft_size, dc_skip_bins);
+
             time_t now = time(NULL);
 
             for (int ch = 0; ch < channel_count; ch++) {
-                long long freq_hz = cfg.start_hz + ((long long)ch * cfg.step_hz);
-                if (freq_hz > cfg.end_hz)
+                long long freq_hz =
+                    cfg.start_hz + ((long long)ch * cfg.step_hz);
+
+                if (freq_hz > cfg.end_hz) {
                     continue;
+                }
 
                 double offset_hz = (double)freq_hz - (double)center_hz;
 
-                if (fabs(offset_hz) > analysis_half_hz)
+                if (fabs(offset_hz) > analysis_half_hz) {
                     continue;
+                }
 
                 double level_db = channel_peak_db(
                     spectrum_db,
@@ -697,8 +823,9 @@ int main(int argc, char **argv)
             }
         }
 
-        if (cfg.one_sweep)
+        if (cfg.one_sweep) {
             break;
+        }
     }
 
     printf("\nScanner stopped.\n");
@@ -706,6 +833,7 @@ int main(int argc, char **argv)
     free(last_report);
     free(fft_buf);
     free(spectrum_db);
+
     iio_buffer_destroy(rxbuf);
     iio_context_destroy(ctx);
 
